@@ -8,13 +8,40 @@ document.addEventListener("DOMContentLoaded", () => {
   async function fetchActivities() {
     try {
       const response = await fetch("/activities");
-      const activities = await response.json();
+      if (!response.ok) {
+        throw new Error(`Could not refresh activities (HTTP ${response.status}).`);
+      }
 
-      // Clear loading message
-      activitiesList.innerHTML = "";
+      const activities = await response.json();
+      const activityEntries =
+        activities && typeof activities === "object" && !Array.isArray(activities)
+          ? Object.entries(activities)
+          : null;
+      if (
+        !activityEntries ||
+        !activityEntries.every(
+          ([, details]) =>
+            details &&
+            typeof details.description === "string" &&
+            typeof details.schedule === "string" &&
+            Number.isFinite(details.max_participants) &&
+            Array.isArray(details.participants) &&
+            details.participants.every((email) => typeof email === "string")
+        )
+      ) {
+        throw new Error("Could not refresh activities because the server returned invalid data.");
+      }
+
+      const selectedActivity = activitySelect.value;
+      const activityCards = document.createDocumentFragment();
+      const activityOptions = document.createDocumentFragment();
+      const placeholderOption = document.createElement("option");
+      placeholderOption.value = "";
+      placeholderOption.textContent = "-- Select an activity --";
+      activityOptions.appendChild(placeholderOption);
 
       // Populate activities list
-      Object.entries(activities).forEach(([name, details]) => {
+      activityEntries.forEach(([name, details]) => {
         const activityCard = document.createElement("div");
         activityCard.className = "activity-card";
 
@@ -25,18 +52,76 @@ document.addEventListener("DOMContentLoaded", () => {
           <p>${details.description}</p>
           <p><strong>Schedule:</strong> ${details.schedule}</p>
           <p><strong>Availability:</strong> ${spotsLeft} spots left</p>
+          <div class="participants">
+            <strong>Participants (${details.participants.length}):</strong>
+            <ul class="participant-list"></ul>
+          </div>
         `;
 
-        activitiesList.appendChild(activityCard);
+        const participantList = activityCard.querySelector(".participant-list");
+        if (details.participants.length === 0) {
+          const emptyMessage = document.createElement("li");
+          emptyMessage.textContent = "No participants yet.";
+          emptyMessage.className = "participant-empty";
+          participantList.appendChild(emptyMessage);
+        } else {
+          details.participants.forEach((email) => {
+            const participant = document.createElement("li");
+            participant.className = "participant-row";
+
+            const participantEmail = document.createElement("span");
+            participantEmail.textContent = email;
+
+            const removeButton = document.createElement("button");
+            removeButton.type = "button";
+            removeButton.className = "participant-remove";
+            removeButton.textContent = "×";
+            removeButton.setAttribute("aria-label", `Unregister ${email} from ${name}`);
+            removeButton.title = `Unregister ${email}`;
+            removeButton.addEventListener("click", async () => {
+              try {
+                const response = await fetch(
+                  `/activities/${encodeURIComponent(name)}/signup?email=${encodeURIComponent(email)}`,
+                  { method: "DELETE" }
+                );
+                const result = await response.json();
+                if (!response.ok) {
+                  throw new Error(result.detail || "Could not unregister participant");
+                }
+                messageDiv.textContent = "";
+                messageDiv.className = "hidden";
+                await fetchActivities();
+              } catch (error) {
+                messageDiv.textContent = error.message || "Could not unregister participant";
+                messageDiv.className = "error";
+                messageDiv.classList.remove("hidden");
+              }
+            });
+
+            participant.append(participantEmail, removeButton);
+            participantList.appendChild(participant);
+          });
+        }
+
+        activityCards.appendChild(activityCard);
 
         // Add option to select dropdown
         const option = document.createElement("option");
         option.value = name;
         option.textContent = name;
-        activitySelect.appendChild(option);
+        activityOptions.appendChild(option);
       });
+
+      activitiesList.replaceChildren(activityCards);
+      activitySelect.replaceChildren(activityOptions);
+      if (Object.prototype.hasOwnProperty.call(activities, selectedActivity)) {
+        activitySelect.value = selectedActivity;
+      }
     } catch (error) {
-      activitiesList.innerHTML = "<p>Failed to load activities. Please try again later.</p>";
+      messageDiv.textContent =
+        error.message || "Could not refresh activities. Please try again.";
+      messageDiv.className = "error";
+      messageDiv.classList.remove("hidden");
       console.error("Error fetching activities:", error);
     }
   }
@@ -62,6 +147,7 @@ document.addEventListener("DOMContentLoaded", () => {
         messageDiv.textContent = result.message;
         messageDiv.className = "success";
         signupForm.reset();
+        await fetchActivities();
       } else {
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
